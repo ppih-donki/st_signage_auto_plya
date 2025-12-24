@@ -1,1 +1,76 @@
+name: Generate manifest.json
 
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "images/**"
+      - "videos.json"
+      - ".github/workflows/generate-manifest.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate manifest.json
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+
+          const imagesDir = path.join(process.cwd(), 'images');
+
+          // 1) images/ から画像・動画(もし入っていれば)を拾う（現状設計の延長）
+          let imageFiles = [];
+          if (fs.existsSync(imagesDir)) {
+            const entries = fs.readdirSync(imagesDir);
+            imageFiles = entries
+              .filter(f => !f.startsWith('.'))
+              .filter(f => /\.(png|jpg|jpeg|gif|webp|mp4|webm)$/i.test(f))
+              .map(f => `images/${f}`)
+              .sort((a,b) => a.localeCompare(b, 'en'));
+          }
+
+          // 2) videos.json（直リンク）を読んで追加
+          let videoUrls = [];
+          const videosJsonPath = path.join(process.cwd(), 'videos.json');
+          if (fs.existsSync(videosJsonPath)) {
+            try {
+              const raw = fs.readFileSync(videosJsonPath, 'utf-8');
+              const obj = JSON.parse(raw);
+              if (obj && Array.isArray(obj.videos)) {
+                videoUrls = obj.videos.filter(Boolean);
+              }
+            } catch (e) {
+              // 壊れてたら無視（manifest生成を止めない）
+              videoUrls = [];
+            }
+          }
+
+          // 3) 結合して manifest.json を出力
+          const files = [...imageFiles, ...videoUrls];
+          const manifest = { files };
+
+          fs.writeFileSync('manifest.json', JSON.stringify(manifest, null, 2) + '\n', 'utf-8');
+          console.log('Generated manifest.json with', files.length, 'files');
+          NODE
+
+      - name: Commit manifest.json
+        run: |
+          if git diff --quiet; then
+            echo "No changes"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add manifest.json
+          git commit -m "Update manifest.json"
+          git push

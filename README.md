@@ -1,1 +1,1 @@
-# st_signage_auto_plya
+# signage_auto_plya

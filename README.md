@@ -1,0 +1,1 @@
+# st_signage_auto_plya

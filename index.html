@@ -2,25 +2,20 @@
 <html lang="ja">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Signage Slideshow</title>
+
   <style>
     html, body {
       margin: 0;
-      padding: 0;
       width: 100%;
       height: 100%;
       background: #fff;
       overflow: hidden;
-      touch-action: manipulation;
     }
     #stage {
       position: fixed;
       inset: 0;
-      width: 100vw;
-      height: 100vh;
       background: #fff;
     }
     .media {
@@ -28,340 +23,132 @@
       inset: 0;
       width: 100%;
       height: 100%;
-      background: #fff;
-      opacity: 0;
-      transition: opacity 600ms ease;
-
-      /* 横幅いっぱい＆見切れなし（上下に白帯OK） */
       object-fit: contain;
-      object-position: center center;
-    }
-    .media.show { opacity: 1; }
-
-    #hint {
-      position: absolute;
-      inset: 0;
-      display: grid;
-      place-items: center;
-      color: #fff;
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Noto Sans JP", sans-serif;
-      text-align: center;
-      padding: 24px;
-      background: rgba(0,0,0,0.35);
-      z-index: 10;
+      background: #fff;
       opacity: 0;
-      pointer-events: none;
-      transition: opacity 250ms ease;
+      transition: opacity .5s;
     }
-    #hint.show { opacity: 1; pointer-events: auto; }
-    #hint .box { max-width: 720px; line-height: 1.6; }
-    #hint button {
-      margin-top: 14px;
-      font-size: 16px;
-      padding: 10px 16px;
-      border: 0;
-      border-radius: 10px;
-      background: #fff;
-      color: #000;
+    .media.show {
+      opacity: 1;
     }
-
-    #loading {
-      position: absolute;
-      inset: 0;
-      display: grid;
-      place-items: center;
-      color: #000;
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Noto Sans JP", sans-serif;
-      text-align: center;
-      padding: 24px;
-      background: #fff;
-      z-index: 20;
-      white-space: pre-wrap;
-    }
-    #loading.hidden { display: none; }
   </style>
 </head>
+
 <body>
-  <div id="stage" aria-label="signage slideshow"></div>
-  <div id="loading">読み込み中...</div>
+<div id="stage"></div>
 
-  <div id="hint">
-    <div class="box">
-      <div style="font-size:18px;font-weight:700;margin-bottom:6px;">タップして再生開始</div>
-      <div style="font-size:14px;opacity:0.9;">
-        端末/ブラウザの仕様で動画の自動再生が止まることがあります。<br />
-        1回タップすると、以降はスライドショーがループします。
-      </div>
-      <button id="startBtn" type="button">再生開始</button>
-    </div>
-  </div>
+<script>
+const MANIFEST_URL = "manifest.json";
+const IMAGE_DEFAULT_MS = 8000;
+const AUTO_RELOAD_MS = 10 * 60 * 1000;
 
-  <script>
-    const MANIFEST_URL = "manifest.json";
-    const IMAGE_DEFAULT_MS = 8000;
-    const FADE_MS = 600;
-    const AUTO_RELOAD_MS = 10 * 60 * 1000; // 必要なら 60*60*1000 や 24*60*60*1000 に変更
+const stage = document.getElementById("stage");
 
-    const stage = document.getElementById("stage");
-    const hint = document.getElementById("hint");
-    const startBtn = document.getElementById("startBtn");
-    const loading = document.getElementById("loading");
+let PLAYLIST = [];
+let index = 0;
+let timer = null;
 
-    let PLAYLIST = [];
-    let currentIndex = 0;
+/* ★ videoは1個だけ */
+const video = document.createElement("video");
+video.className = "media";
+video.muted = true;
+video.autoplay = true;
+video.playsInline = true;
+video.controls = false;
+video.preload = "auto";
+stage.appendChild(video);
 
-    // 画像用（毎回作り直す）
-    let currentImg = null;
+let img = null;
 
-    // 動画用（★ここが肝：1要素を使い回す）
-    const videoEl = document.createElement("video");
-    videoEl.className = "media";
-    videoEl.playsInline = true;
-    videoEl.setAttribute("playsinline", "");
-    videoEl.setAttribute("webkit-playsinline", "");
-    videoEl.muted = true;
-    videoEl.defaultMuted = true;
-    videoEl.volume = 0;
-    videoEl.setAttribute("muted", "");
-    videoEl.autoplay = false;
-    videoEl.loop = false;
-    videoEl.controls = false;
-    videoEl.preload = "auto";
-    videoEl.style.display = "none";
-    stage.appendChild(videoEl);
+function clearTimer() {
+  if (timer) clearTimeout(timer);
+  timer = null;
+}
 
-    let timerId = null;
-    let started = false;
+function show(el) {
+  requestAnimationFrame(() => el.classList.add("show"));
+}
 
-    function clearTimer() {
-      if (timerId) {
-        clearTimeout(timerId);
-        timerId = null;
-      }
-    }
+function hide(el) {
+  if (!el) return;
+  el.classList.remove("show");
+}
 
-    function extOf(path) {
-      const m = path.toLowerCase().match(/\.([a-z0-9]+)(\?.*)?$/);
-      return m ? m[1] : "";
-    }
+function next() {
+  index = (index + 1) % PLAYLIST.length;
+  play();
+}
 
-    function typeFromSrc(src) {
-      const ext = extOf(src);
-      if (ext === "mp4" || ext === "webm") return "video";
-      return "image";
-    }
+async function playImage(src) {
+  clearTimer();
+  hide(video);
 
-    function showEl(el) {
-      requestAnimationFrame(() => el.classList.add("show"));
-    }
+  if (img) img.remove();
+  img = document.createElement("img");
+  img.src = src;
+  img.className = "media";
+  stage.appendChild(img);
 
-    function hideEl(el) {
-      if (!el) return;
-      el.classList.remove("show");
-    }
+  await new Promise(r => {
+    if (img.complete) return r();
+    img.onload = img.onerror = r;
+  });
 
-    function removeImgIfAny() {
-      if (!currentImg) return;
-      const img = currentImg;
-      currentImg = null;
-      img.classList.remove("show");
-      setTimeout(() => {
-        if (img.parentNode) img.parentNode.removeChild(img);
-      }, FADE_MS + 50);
-    }
+  show(img);
+  timer = setTimeout(next, IMAGE_DEFAULT_MS);
+}
 
-    function hideVideo() {
-      hideEl(videoEl);
-      videoEl.style.display = "none";
-      try { videoEl.pause(); } catch (_) {}
-    }
+async function playVideo(src) {
+  clearTimer();
+  if (img) { img.remove(); img = null; }
 
-    async function showImage(src, durationMs) {
-      clearTimer();
+  hide(video);
+  video.pause();
+  video.src = src;
+  video.load();
 
-      hideVideo();
-      removeImgIfAny();
+  await new Promise(r => {
+    video.onloadedmetadata = r;
+    video.onerror = r;
+  });
 
-      const img = document.createElement("img");
-      img.className = "media";
-      img.src = src;
-      img.alt = "";
-      img.decoding = "async";
-      img.loading = "eager";
-      stage.appendChild(img);
-      currentImg = img;
+  show(video);
+  video.play().catch(()=>{});
 
-      await new Promise((resolve) => {
-        if (img.complete) return resolve();
-        img.onload = () => resolve();
-        img.onerror = () => resolve();
-      });
+  /* ★ onendedは補助 */
+  video.onended = next;
 
-      showEl(img);
+  /* ★ メインは duration タイマー */
+  if (video.duration && isFinite(video.duration)) {
+    timer = setTimeout(next, video.duration * 1000 + 300);
+  } else {
+    timer = setTimeout(next, 15000); // 保険
+  }
+}
 
-      const ms = Number.isFinite(durationMs) ? durationMs : IMAGE_DEFAULT_MS;
-      timerId = setTimeout(() => goNext(), ms);
-    }
+function play() {
+  const item = PLAYLIST[index];
+  if (item.type === "image") {
+    playImage(item.src);
+  } else {
+    playVideo(item.src);
+  }
+}
 
-    async function showVideo(src) {
-      clearTimer();
+async function boot() {
+  const res = await fetch(MANIFEST_URL, { cache: "no-store" });
+  const data = await res.json();
 
-      removeImgIfAny();
-      hideEl(videoEl); // 一旦フェードアウト（同一要素だが切替感を出す）
+  PLAYLIST = data.files.map(src => ({
+    src,
+    type: src.match(/\.(mp4|webm)$/i) ? "video" : "image"
+  }));
 
-      // ★同一video要素を使い回す（ここが「1→2で止まる」の根本対策）
-      // src変更→load→play の順に統一
-      try { videoEl.pause(); } catch (_) {}
-      videoEl.removeAttribute("src");
-      try { videoEl.load(); } catch (_) {}
+  play();
+  setTimeout(() => location.reload(), AUTO_RELOAD_MS);
+}
 
-      videoEl.src = src;
-      videoEl.style.display = "block";
-
-      // 念のため load 明示（端末差対策）
-      try { videoEl.load(); } catch (_) {}
-
-      // メタ待ち（無限待ち防止）
-      await new Promise((resolve) => {
-        const done = () => resolve();
-        videoEl.onloadedmetadata = done;
-        videoEl.oncanplay = done;
-        videoEl.onerror = done;
-        setTimeout(done, 4000);
-      });
-
-      showEl(videoEl);
-
-      try {
-        await videoEl.play();
-      } catch (e) {
-        started = false;
-        hint.classList.add("show");
-        return;
-      }
-
-      // 終了したら次へ
-      videoEl.onended = () => goNext();
-
-      // 保険（onendedが飛ばない端末向け）
-      if (Number.isFinite(videoEl.duration) && videoEl.duration > 0) {
-        const fallbackMs = Math.ceil(videoEl.duration * 1000) + 500;
-        timerId = setTimeout(() => goNext(), fallbackMs);
-      }
-    }
-
-    async function playItem(index) {
-      const item = PLAYLIST[index];
-      if (!item) return;
-
-      if (item.type === "image") {
-        await showImage(item.src, item.durationMs);
-      } else {
-        await showVideo(item.src);
-      }
-    }
-
-    function goNext() {
-      if (!PLAYLIST.length) return;
-      currentIndex = (currentIndex + 1) % PLAYLIST.length;
-      playItem(currentIndex);
-    }
-
-    function startSlideshow() {
-      if (!PLAYLIST.length) return;
-      hint.classList.remove("show");
-      started = true;
-      playItem(currentIndex);
-    }
-
-    document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible" && started) {
-        // 表示復帰時に動画が止まってたら再生を試す
-        if (videoEl.style.display !== "none" && videoEl.paused) {
-          videoEl.play().catch(() => {
-            started = false;
-            hint.classList.add("show");
-          });
-        }
-      }
-    });
-
-    async function loadManifest() {
-      const res = await fetch(MANIFEST_URL, { cache: "no-store" });
-      if (!res.ok) throw new Error("manifest.json を取得できませんでした（HTTP " + res.status + "）");
-
-      const text = await res.text();
-      if (!text || !text.trim()) throw new Error("manifest.json が空です（0バイト）");
-
-      let data;
-      try {
-        data = JSON.parse(text);
-      } catch (e) {
-        throw new Error("manifest.json がJSONとして壊れています: " + (e?.message || String(e)));
-      }
-
-      const files = Array.isArray(data.files) ? data.files : [];
-      const items = files
-        .filter(Boolean)
-        .map((src) => ({
-          src,
-          type: typeFromSrc(src),
-          durationMs: typeFromSrc(src) === "image" ? IMAGE_DEFAULT_MS : undefined
-        }));
-
-      if (!items.length) throw new Error("再生対象が0件です");
-
-      PLAYLIST = items;
-      currentIndex = 0;
-    }
-
-    function setupAutoReload() {
-      setTimeout(() => {
-        const url = new URL(location.href);
-        url.searchParams.set("_ts", String(Date.now()));
-        location.replace(url.toString());
-      }, AUTO_RELOAD_MS);
-    }
-
-    async function boot() {
-      try {
-        await loadManifest();
-        loading.classList.add("hidden");
-        setupAutoReload();
-        startSlideshow();
-
-        setTimeout(() => {
-          if (!started) hint.classList.add("show");
-        }, 400);
-      } catch (e) {
-        loading.textContent =
-          "読み込み失敗: " + (e?.message || String(e)) + "\n\n" +
-          "確認ポイント:\n" +
-          "1) manifest.json が生成されているか\n" +
-          "2) JSONが壊れていないか\n" +
-          "3) 公開URLの manifest.json が最新か";
-      }
-    }
-
-    startBtn.addEventListener("click", startSlideshow);
-    hint.addEventListener("click", startSlideshow);
-
-    // クリックで次へ（ただし「動画が止まってるなら再生再試行」を優先）
-    stage.addEventListener("click", () => {
-      if (hint.classList.contains("show")) return;
-
-      if (videoEl.style.display !== "none" && videoEl.paused) {
-        videoEl.play().then(() => {
-          started = true;
-          hint.classList.remove("show");
-        }).catch(() => {});
-        return;
-      }
-
-      goNext();
-    });
-
-    boot();
-  </script>
+boot();
+</script>
 </body>
 </html>
